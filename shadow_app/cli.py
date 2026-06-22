@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from pathlib import Path
+import json
+import sys
 
 import click
 from rich.console import Console
 from rich.table import Table
 
 from .banner import SHADOW_BANNER
-from .store import diff_traces, export_html, list_traces, record_trace
+from .behavior import SUITE, HTTPTarget, take_snapshot
+from .diff import diff_snapshots
+from .store import list_labels, load_snapshot, save_snapshot
 
 console = Console()
+_STYLE = {"high": "bold red", "medium": "yellow", "low": "cyan", "stable": "green"}
 
 
 def _banner() -> None:
@@ -23,52 +27,69 @@ class BannerGroup(click.Group):
 
 
 @click.group(cls=BannerGroup)
+@click.version_option(package_name="shadow")
 def main() -> None:
-    """MAD trace diff utility."""
+    """Behavioral drift / tamper detection for AI agents."""
 
 
-@main.command("record")
-@click.argument("url")
-@click.option("--label", required=True)
-@click.option("--prompt", default="baseline trace request", show_default=True)
-def record_cmd(url: str, label: str, prompt: str) -> None:
-    path = record_trace(url, label, prompt=prompt)
-    console.print(f"[green]Recorded[/green] {path}")
-
-
-@main.command("list")
-def list_cmd() -> None:
-    table = Table(title="shadow traces")
-    table.add_column("Label")
-    table.add_column("File")
-    for path in list_traces():
-        table.add_row(path.parent.name, str(path))
+@main.command("probes")
+def probes_cmd() -> None:
+    """Show the probe suite a snapshot runs."""
+    table = Table(title="shadow · probe suite")
+    table.add_column("Probe", style="bold")
+    table.add_column("Prompt")
+    for p in SUITE:
+        table.add_row(p.name, p.prompt)
     console.print(table)
+
+
+@main.command("snapshot")
+@click.argument("url")
+@click.option("--label", required=True, help="Name this behavioral baseline.")
+@click.option("--field", default="prompt", show_default=True)
+def snapshot_cmd(url: str, label: str, field: str) -> None:
+    """Run the probe suite against an agent and save the snapshot."""
+    snap = take_snapshot(HTTPTarget(url, field=field))
+    path = save_snapshot(label, snap, url=url)
+    refused = sum(1 for s in snap.values() if s["refused"])
+    console.print(f"[green]snapshot[/green] '{label}' saved → {path}  ({len(snap)} probes, {refused} refusals)")
 
 
 @main.command("diff")
 @click.argument("left_label")
 @click.argument("right_label")
-def diff_cmd(left_label: str, right_label: str) -> None:
-    report = diff_traces(left_label, right_label)
-    if not report["changed"]:
-        console.print("no changes")
+@click.option("--json", "as_json", is_flag=True)
+def diff_cmd(left_label: str, right_label: str, as_json: bool) -> None:
+    """Compare two saved snapshots and grade the drift."""
+    report = diff_snapshots(load_snapshot(left_label), load_snapshot(right_label))
+    if as_json:
+        sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
         return
-    console.print(report["summary"])
-    if report.get("diff"):
-        console.print(report["diff"])
-    console.print(f"time delta ms: {report['time_delta_ms']}")
+    table = Table(title=f"shadow · diff · {left_label} → {right_label}  (verdict: {report['verdict']})")
+    table.add_column("Probe", style="bold")
+    table.add_column("Severity")
+    table.add_column("Sim")
+    table.add_column("Signal")
+    for name, p in report["probes"].items():
+        sev = p.get("severity", "stable")
+        sig = []
+        if p.get("refusal_flip"):
+            sig.append("refusal flipped")
+        if p.get("new_tools"):
+            sig.append(f"+tools {p['new_tools']}")
+        if p.get("dropped_tools"):
+            sig.append(f"-tools {p['dropped_tools']}")
+        if p.get("note"):
+            sig.append(p["note"])
+        table.add_row(name, f"[{_STYLE.get(sev,'')}]{sev}[/]", str(p.get("similarity", "—")), "; ".join(sig) or "—")
+    console.print(table)
 
 
-@main.command("export")
-@click.argument("left_label")
-@click.argument("right_label")
-@click.option("--html", "as_html", is_flag=True)
-def export_cmd(left_label: str, right_label: str, as_html: bool) -> None:
-    if not as_html:
-        raise click.ClickException("use --html")
-    path: Path = export_html(left_label, right_label)
-    console.print(path)
+@main.command("list")
+def list_cmd() -> None:
+    """List saved snapshot labels."""
+    for label in list_labels():
+        console.print(label)
 
 
 if __name__ == "__main__":

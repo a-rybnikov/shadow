@@ -11,6 +11,10 @@ re-takes it later. Drift between the two snapshots is how a poisoned memory, an
 injected prompt, a silent model swap, or a quietly-edited system prompt becomes
 visible.
 
+The same reproducibility that makes an eval re-scorable makes tampering
+auditable: fix the probe suite, re-run it, compare. Continuity of behaviour,
+checked the way you'd check continuity of a result.
+
 Lineage: [garak](https://github.com/NVIDIA/garak) / [PyRIT](https://github.com/Azure/PyRIT).
 
 ---
